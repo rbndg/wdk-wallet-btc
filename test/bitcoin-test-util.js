@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { execSync, spawn } from 'child_process'
 import ElectrumClient from '../src/electrum-client.js'
+import { address as _address, networks as _networks }  from 'bitcoinjs-lib'
 
 const DATA_DIR = process.env.TEST_BITCOIN_CLI_DATA_DIR || `${process.env.HOME}/.bitcoin`
 const CLI = process.env.TEST_BITCOIN_CLI || 'bitcoin-cli'
@@ -43,7 +44,12 @@ export async function currentElectrumBlock () {
 }
 
 export async function getTransaction (txid) {
-  return electrum.getTransaction(txid)
+  const txData = await  electrum.getTransaction(txid)
+  const addr  = _address.fromOutputScript(txData.outs[0].script, _networks.regtest)
+  const changeAddr  = _address.fromOutputScript(txData.outs[1].script, _networks.regtest)
+  txData._recipient_addr = addr 
+  txData._change_addr = changeAddr 
+  return txData
 }
 
 export async function mineBlock (minerAddr) {
@@ -84,7 +90,6 @@ function startBitcoinCore () {
     '-minrelaytxfee=0.00000100',
         `-datadir=${DATA_DIR}`
   ]
-
 
   const child = spawn(BD, args, {
     stdio: 'inherit',
@@ -130,6 +135,7 @@ async function runBitcoind () {
           }
         }
       } catch (e) {
+        await startBitcoinCore()
         // ignore individual call errors
       }
       await new Promise(res => setTimeout(res, 2000))

@@ -256,6 +256,17 @@ export default class ElectrumClient {
     return result
   }
 
+  async getBalance (address) {
+    const scriptHash = this.getScriptHash(address)
+    const result = await this._request('blockchain.scripthash.get_balance', [scriptHash])
+    return result
+  }
+
+  async getCurrentBlockHeight () {
+    const header = await this._request('blockchain.headers.subscribe', [])
+    return header.height
+  }
+
   isConnected () {
     return this._connected
   }

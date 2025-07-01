@@ -13,7 +13,7 @@
 // limitations under the License.
 'use strict'
 
-import { crypto, initEccLib, payments, Psbt } from 'bitcoinjs-lib'
+import { crypto, initEccLib, payments, Psbt, address as _address } from 'bitcoinjs-lib'
 import { BIP32Factory } from 'bip32'
 import BigNumber from 'bignumber.js'
 
@@ -296,42 +296,28 @@ export default class WalletAccountBtc {
 
     const history = await this._electrumClient.getHistory(address)
 
-    const isAddressMatch = (scriptPubKey, addr) => {
-      if (!scriptPubKey) return false
-      if (scriptPubKey.address) return scriptPubKey.address === addr
-      if (Array.isArray(scriptPubKey.addresses)) return scriptPubKey.addresses.includes(addr)
-      return false
-    }
-
-    const extractAddress = (scriptPubKey) => {
-      if (!scriptPubKey) return null
-      if (scriptPubKey.address) return scriptPubKey.address
-      if (Array.isArray(scriptPubKey.addresses)) return scriptPubKey.addresses[0]
-      return null
-    }
-
-    const getInputValue = async (vinList) => {
-      let total = 0
+    const getVins = async (vinList) => {
+      const vins =  []
       for (const vin of vinList) {
         try {
-          const prevTx = await this._electrumClient.getTransaction(vin.txid)
-          const prevVout = prevTx.vout[vin.vout]
-          total += prevVout.value
-        } catch (_) {}
+          const prevTxid = Buffer.from(vin.hash).reverse().toString('hex');
+          const prevTx = await this._electrumClient.getTransaction(prevTxid)
+          vins.push(prevTx.outs)
+        }catch (_) { }
       }
-      return total
+
+      return vins
     }
 
-    const isOutgoingTx = async (vinList) => {
-      for (const vin of vinList) {
-        try {
-          const prevTx = await this._electrumClient.getTransaction(vin.txid)
-          const prevVout = prevTx.vout[vin.vout]
-          if (isAddressMatch(prevVout.scriptPubKey, address)) return true
-        } catch (_) {}
+      const isOutgoingTx = async (vinList) => {
+        for (const vin of vinList.flat()) {
+          try {
+            const prevAddr = _address.fromOutputScript(vin.script, this._electrumClient.network) 
+            if (prevAddr === address) return true
+          } catch (_) {}
+        }
+        return false
       }
-      return false
-    }
 
     const transfers = []
 
@@ -339,20 +325,25 @@ export default class WalletAccountBtc {
       if (transfers.length >= limit) break
 
       const tx = await this._electrumClient.getTransaction(item.tx_hash)
-      const totalInput = await getInputValue(tx.vin)
-      const totalOutput = tx.vout.reduce((sum, vout) => sum + vout.value, 0)
+      const vins = await getVins(tx.ins)
+      const totalOutput = tx.outs.reduce((sum, vout) => sum + vout.value, 0)
+      const totalInput = vins.reduce((sum, vout) => {
+        return vout.reduce((sum, out) => {
+          return sum + out.value
+        }, 0) + sum
+      }, 0)
       const fee = totalInput > 0 ? +(totalInput - totalOutput).toFixed(8) : null
-      const isOutgoing = await isOutgoingTx(tx.vin)
+      const isOutgoing = await isOutgoingTx(vins)
 
-      for (const [index, vout] of tx.vout.entries()) {
-        const recipient = extractAddress(vout.scriptPubKey)
-        const isToSelf = isAddressMatch(vout.scriptPubKey, address)
+      for (const [index, vout] of tx.outs.entries()) {
+        const recipient =  _address.fromOutputScript(vout.script, this._electrumClient.network) 
+        const isToSelf = recipient === address
 
         let directionType = null
         if (isToSelf && !isOutgoing) directionType = 'incoming'
-        else if (!isToSelf && isOutgoing) directionType = 'outgoing'
-        else if (isToSelf && isOutgoing) directionType = 'change'
-        else continue
+          else if (!isToSelf && isOutgoing) directionType = 'outgoing'
+            else if (isToSelf && isOutgoing) directionType = 'change'
+              else continue
 
         if (directionType === 'change') continue
         if (direction !== 'all' && direction !== directionType) continue
